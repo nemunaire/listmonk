@@ -40,7 +40,7 @@ dockers:
     image_templates:
     - "listmonk/listmonk:latest"
     - "listmonk/listmonk:{{ .Tag }}"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile-builded
     extra_files:
     - config.toml.sample
     - config-demo.toml

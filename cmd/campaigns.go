@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/uuid/v5"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/notifs"
 	"github.com/knadh/listmonk/models"
@@ -20,6 +22,10 @@ import (
 	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
+
+// happyDeliverHTTP is the shared HTTP client used for talking to the
+// happyDeliver API (create test, poll status, fetch report).
+var happyDeliverHTTP = &http.Client{Timeout: 15 * time.Second}
 
 // campReq is a wrapper over the Campaign model for receiving
 // campaign creation and update data from APIs.
@@ -598,6 +604,172 @@ func (a *App) TestCampaign(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, okResp{true})
+}
+
+// TestCampaignDeliverability sends the campaign as a test to a disposable
+// address minted by happyDeliver. It returns the happyDeliver test ID and
+// email so the frontend can poll for the resulting grade.
+func (a *App) TestCampaignDeliverability(c echo.Context) error {
+	id := getID(c)
+
+	if err := a.checkCampaignPerm(auth.PermTypeManage, id, c); err != nil {
+		return err
+	}
+
+	if a.cfg.HappyDeliver.URL == "" {
+		return echo.NewHTTPError(http.StatusBadRequest,
+			a.i18n.T("campaigns.deliverabilityDisabled"))
+	}
+
+	var req campReq
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+
+	if c, err := a.validateCampaignFields(req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	} else {
+		req = c
+	}
+
+	// Resolve the subscriber used for template rendering. If the user supplied
+	// a single email and it matches an existing subscriber, use it so that
+	// personalization tokens render as they would for a real recipient.
+	// Otherwise fall back to an in-memory dummy subscriber.
+	var sub models.Subscriber
+	if len(req.SubscriberEmails) == 1 {
+		email := strings.ToLower(strings.TrimSpace(req.SubscriberEmails[0]))
+		subs, err := a.core.GetSubscribersByEmail([]string{email})
+		if err == nil && len(subs) > 0 {
+			user := auth.GetUser(c)
+			if err := a.hasSubPerm(user, []int{subs[0].ID}); err != nil {
+				return err
+			}
+			sub = subs[0]
+		}
+	}
+
+	if sub.ID == 0 {
+		sub = models.Subscriber{
+			UUID:   uuid.Must(uuid.NewV4()).String(),
+			Email:  "deliverability-test@happydeliver.local",
+			Name:   "Deliverability Test",
+			Status: models.SubscriberStatusEnabled,
+		}
+	}
+
+	// Mint a new test on happyDeliver.
+	hdReq, err := http.NewRequestWithContext(c.Request().Context(), http.MethodPost,
+		strings.TrimRight(a.cfg.HappyDeliver.URL, "/")+"/api/test", nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	hdReq.Header.Set("Accept", "application/json")
+	hdResp, err := happyDeliverHTTP.Do(hdReq)
+	if err != nil {
+		a.log.Printf("error creating happydeliver test: %v", err)
+		return echo.NewHTTPError(http.StatusBadGateway,
+			a.i18n.Ts("campaigns.deliverabilityError", "error", err.Error()))
+	}
+	defer hdResp.Body.Close()
+	if hdResp.StatusCode < 200 || hdResp.StatusCode >= 300 {
+		return echo.NewHTTPError(http.StatusBadGateway,
+			a.i18n.Ts("campaigns.deliverabilityError", "error",
+				fmt.Sprintf("happydeliver returned %d", hdResp.StatusCode)))
+	}
+
+	var hdOut struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(hdResp.Body).Decode(&hdOut); err != nil {
+		return echo.NewHTTPError(http.StatusBadGateway,
+			a.i18n.Ts("campaigns.deliverabilityError", "error", err.Error()))
+	}
+	if hdOut.ID == "" || hdOut.Email == "" {
+		return echo.NewHTTPError(http.StatusBadGateway,
+			a.i18n.Ts("campaigns.deliverabilityError", "error", "empty test response"))
+	}
+
+	// Override the subscriber's email with the minted happyDeliver address so
+	// the message is actually delivered there, while keeping any other real
+	// subscriber fields for personalization.
+	sub.Email = hdOut.Email
+
+	// Fetch the campaign for preview and apply the same overrides TestCampaign
+	// uses, so the sent email reflects unsaved edits in the form.
+	tplID, _ := strconv.Atoi(c.FormValue("template_id"))
+	camp, err := a.core.GetCampaignForPreview(id, tplID)
+	if err != nil {
+		return err
+	}
+	camp.Name = req.Name
+	camp.Subject = req.Subject
+	camp.FromEmail = req.FromEmail
+	camp.Body = req.Body
+	camp.AltBody = req.AltBody
+	camp.Messenger = req.Messenger
+	camp.ContentType = req.ContentType
+	camp.Headers = req.Headers
+	camp.TemplateID = req.TemplateID
+	for _, mid := range req.MediaIDs {
+		if mid > 0 {
+			camp.MediaIDs = append(camp.MediaIDs, int64(mid))
+		}
+	}
+
+	if err := a.sendTestMessage(sub, &camp); err != nil {
+		a.log.Printf("error sending deliverability test message: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError,
+			a.i18n.Ts("campaigns.errorSendTest", "error", err.Error()))
+	}
+
+	return c.JSON(http.StatusOK, okResp{struct {
+		TestID    string `json:"test_id"`
+		TestEmail string `json:"test_email"`
+	}{hdOut.ID, hdOut.Email}})
+}
+
+// GetDeliverabilityTestStatus proxies happyDeliver's GET /api/test/{id}.
+func (a *App) GetDeliverabilityTestStatus(c echo.Context) error {
+	return a.proxyHappyDeliver(c, "/api/test/"+url.PathEscape(c.Param("testID")))
+}
+
+// GetDeliverabilityReport proxies happyDeliver's GET /api/report/{id}.
+func (a *App) GetDeliverabilityReport(c echo.Context) error {
+	return a.proxyHappyDeliver(c, "/api/report/"+url.PathEscape(c.Param("testID")))
+}
+
+// proxyHappyDeliver performs a GET against happyDeliver and returns the
+// response body wrapped in the listmonk okResp envelope, so the frontend's
+// axios interceptor unwraps it consistently with other API responses.
+func (a *App) proxyHappyDeliver(c echo.Context, path string) error {
+	if a.cfg.HappyDeliver.URL == "" {
+		return echo.NewHTTPError(http.StatusBadRequest,
+			a.i18n.T("campaigns.deliverabilityDisabled"))
+	}
+
+	req, err := http.NewRequestWithContext(c.Request().Context(), http.MethodGet,
+		strings.TrimRight(a.cfg.HappyDeliver.URL, "/")+path, nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := happyDeliverHTTP.Do(req)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadGateway, err.Error())
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadGateway, err.Error())
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return echo.NewHTTPError(resp.StatusCode, string(body))
+	}
+	return c.JSON(http.StatusOK, okResp{json.RawMessage(body)})
 }
 
 // GetCampaignViewAnalytics retrieves view counts for a campaign.

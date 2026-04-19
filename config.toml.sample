@@ -22,3 +22,12 @@ max_lifetime = "300s"
 
 # Optional space separated Postgres DSN params. eg: "application_name=listmonk gssencmode=disable"
 params = ""
+
+
+# happyDeliver email deliverability testing.
+# When `url` is set, the campaign editor shows a "Test deliverability" card
+# that sends the campaign to a disposable address minted by happyDeliver and
+# displays the resulting grade (SPF/DKIM/DMARC, spam score, content checks).
+# Leave `url` empty to hide the feature.
+[happydeliver]
+url = ""

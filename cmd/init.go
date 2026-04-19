@@ -148,6 +148,10 @@ type Config struct {
 	BounceForwardemailEnabled bool
 	BounceLettermintEnabled   bool
 
+	HappyDeliver struct {
+		URL string `koanf:"url"`
+	} `koanf:"happydeliver"`
+
 	PermissionsRaw json.RawMessage
 	Permissions    map[string]struct{}
 }

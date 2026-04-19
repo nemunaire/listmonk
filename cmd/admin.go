@@ -35,6 +35,10 @@ type serverConfig struct {
 	NeedsRestart  bool            `json:"needs_restart"`
 	HasLegacyUser bool            `json:"has_legacy_user"`
 	Version       string          `json:"version"`
+	HappyDeliver  struct {
+		Enabled bool   `json:"enabled"`
+		URL     string `json:"url"`
+	} `json:"happydeliver"`
 }
 
 // GetServerConfig returns general server config.
@@ -86,6 +90,9 @@ func (a *App) GetServerConfig(c echo.Context) error {
 	out.Update = a.update
 	a.Unlock()
 	out.Version = versionString
+
+	out.HappyDeliver.URL = a.cfg.HappyDeliver.URL
+	out.HappyDeliver.Enabled = a.cfg.HappyDeliver.URL != ""
 
 	return c.JSON(http.StatusOK, okResp{out})
 }

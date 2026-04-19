@@ -176,6 +176,87 @@
                   </b-button>
                 </b-field>
               </div>
+
+              <div v-if="serverConfig.happydeliver && serverConfig.happydeliver.enabled" class="box">
+                <h3 class="title is-size-6">
+                  {{ $t('campaigns.testDeliverability') }}
+                </h3>
+
+                <p class="help mb-2">{{ $t('campaigns.testDeliverabilityHelp') }}</p>
+
+                <b-field v-if="deliverability.state === 'idle' || deliverability.state === 'error'"
+                  :label="$t('campaigns.testDeliverabilityAsSub')" label-position="on-border">
+                  <b-input v-model="form.deliverabilityAsSub" type="email" icon="account-outline"
+                    :disabled="isNew" :placeholder="$t('campaigns.testDeliverabilityAsSubPlaceholder')" />
+                </b-field>
+
+                <b-field v-if="deliverability.state === 'idle'">
+                  <b-button @click="runDeliverabilityTest" :loading="loading.campaigns" :disabled="isNew"
+                    type="is-primary" icon-left="shield-check-outline">
+                    {{ $t('campaigns.runDeliverabilityTest') }}
+                  </b-button>
+                </b-field>
+
+                <div v-else-if="deliverability.state === 'pending'" class="has-text-centered">
+                  <b-loading :active="true" :is-full-page="false" />
+                  <p class="is-size-6">
+                    {{ $t('campaigns.deliverabilityPending', { seconds: deliverability.elapsedSec }) }}
+                  </p>
+                  <p v-if="deliverability.testEmail" class="is-size-7 has-text-grey mt-1">
+                    {{ deliverability.testEmail }}
+                  </p>
+                </div>
+
+                <div v-else-if="deliverability.state === 'done' && deliverability.report">
+                  <div class="has-text-centered mb-3">
+                    <span class="tag is-large" :class="gradeTagClass(deliverability.report.grade)">
+                      {{ deliverability.report.grade }}
+                    </span>
+                    <p class="is-size-6 mt-1">
+                      {{ $t('campaigns.deliverabilityScore') }}:
+                      <strong>{{ deliverability.report.score }}&nbsp;/&nbsp;100</strong>
+                    </p>
+                  </div>
+
+                  <table v-if="deliverability.report.summary" class="table is-fullwidth is-narrow is-size-7">
+                    <tbody>
+                      <tr v-for="row in deliverabilityBreakdown" :key="row.key">
+                        <td>{{ row.label }}</td>
+                        <td class="has-text-right">
+                          <span class="tag" :class="gradeTagClass(row.grade)">{{ row.grade }}</span>
+                          <span class="ml-1">{{ row.score }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <b-field grouped>
+                    <p class="control">
+                      <a :href="deliverabilityReportUrl" target="_blank" rel="noopener noreferrer"
+                        class="button is-primary is-outlined">
+                        <b-icon icon="open-in-new" size="is-small" />
+                        <span>{{ $t('campaigns.deliverabilityViewFullReport') }}</span>
+                      </a>
+                    </p>
+                    <p class="control">
+                      <b-button @click="resetDeliverability" icon-left="refresh">
+                        {{ $t('campaigns.deliverabilityRunNew') }}
+                      </b-button>
+                    </p>
+                  </b-field>
+                </div>
+
+                <div v-else-if="deliverability.state === 'error'">
+                  <b-message type="is-danger" :closable="false" size="is-small">
+                    {{ $t('campaigns.deliverabilityError', { error: deliverability.error || '' }) }}
+                  </b-message>
+                  <b-field>
+                    <b-button @click="runDeliverabilityTest" type="is-primary" icon-left="refresh">
+                      {{ $t('campaigns.deliverabilityRunNew') }}
+                    </b-button>
+                  </b-field>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -393,6 +474,18 @@ export default Vue.extend({
         archiveMetaStr: '{}',
         archiveMeta: {},
         testEmails: [],
+        deliverabilityAsSub: '',
+      },
+
+      deliverability: {
+        state: 'idle', // idle | pending | done | error
+        testId: null,
+        testEmail: null,
+        report: null,
+        error: null,
+        elapsedSec: 0,
+        pollHandle: null,
+        tickHandle: null,
       },
     };
   },
@@ -565,6 +658,122 @@ export default Vue.extend({
       return false;
     },
 
+    runDeliverabilityTest() {
+      this.clearDeliverabilityTimers();
+
+      const subs = this.form.deliverabilityAsSub && this.form.deliverabilityAsSub.trim() !== ''
+        ? [this.form.deliverabilityAsSub.trim()]
+        : [];
+
+      const data = {
+        id: this.data.id,
+        name: this.form.name,
+        subject: this.form.subject,
+        lists: this.form.lists.map((l) => l.id),
+        from_email: this.form.fromEmail,
+        messenger: this.form.messenger,
+        type: 'regular',
+        headers: this.form.headers,
+        tags: this.form.tags,
+        template_id: this.form.content.templateId,
+        content_type: this.form.content.contentType,
+        body: this.form.content.body,
+        altbody: this.form.content.contentType !== 'plain' ? this.form.altbody : null,
+        subscribers: subs,
+        media: this.form.media.map((m) => m.id),
+      };
+
+      this.deliverability = {
+        ...this.deliverability,
+        state: 'pending',
+        testId: null,
+        testEmail: null,
+        report: null,
+        error: null,
+        elapsedSec: 0,
+      };
+
+      this.$api.testCampaignDeliverability(data).then((resp) => {
+        if (!resp || !resp.testId) {
+          this.deliverability.state = 'error';
+          this.deliverability.error = 'invalid response';
+          return;
+        }
+        this.deliverability.testId = resp.testId;
+        this.deliverability.testEmail = resp.testEmail;
+
+        this.deliverability.tickHandle = setInterval(() => {
+          this.deliverability.elapsedSec += 1;
+          if (this.deliverability.elapsedSec > 300) {
+            this.deliverability.state = 'error';
+            this.deliverability.error = 'timeout';
+            this.clearDeliverabilityTimers();
+          }
+        }, 1000);
+
+        this.deliverability.pollHandle = setInterval(() => {
+          this.pollDeliverability();
+        }, 4000);
+      }).catch((err) => {
+        this.deliverability.state = 'error';
+        this.deliverability.error = (err && err.message) ? err.message : String(err);
+      });
+    },
+
+    pollDeliverability() {
+      const testId = this.deliverability.testId;
+      if (!testId) return;
+
+      this.$api.getDeliverabilityStatus(testId).then((status) => {
+        if (!status || this.deliverability.testId !== testId) return;
+        if (status.status === 'analyzed') {
+          this.clearDeliverabilityTimers();
+          this.$api.getDeliverabilityReport(testId).then((report) => {
+            if (this.deliverability.testId !== testId) return;
+            this.deliverability.report = report;
+            this.deliverability.state = 'done';
+          }).catch((err) => {
+            this.deliverability.state = 'error';
+            this.deliverability.error = (err && err.message) ? err.message : String(err);
+          });
+        }
+      }).catch((err) => {
+        this.clearDeliverabilityTimers();
+        this.deliverability.state = 'error';
+        this.deliverability.error = (err && err.message) ? err.message : String(err);
+      });
+    },
+
+    resetDeliverability() {
+      this.clearDeliverabilityTimers();
+      this.deliverability.state = 'idle';
+      this.deliverability.testId = null;
+      this.deliverability.testEmail = null;
+      this.deliverability.report = null;
+      this.deliverability.error = null;
+      this.deliverability.elapsedSec = 0;
+    },
+
+    clearDeliverabilityTimers() {
+      if (this.deliverability.pollHandle) {
+        clearInterval(this.deliverability.pollHandle);
+        this.deliverability.pollHandle = null;
+      }
+      if (this.deliverability.tickHandle) {
+        clearInterval(this.deliverability.tickHandle);
+        this.deliverability.tickHandle = null;
+      }
+    },
+
+    gradeTagClass(grade) {
+      if (!grade) return 'is-light';
+      const g = String(grade).toUpperCase();
+      if (g.startsWith('A')) return 'is-success';
+      if (g.startsWith('B')) return 'is-info';
+      if (g.startsWith('C')) return 'is-warning';
+      return 'is-danger';
+    },
+
     createCampaign() {
       const data = {
         archiveSlug: this.form.subject,
@@ -734,6 +943,27 @@ export default Vue.extend({
     otherMessengers() {
       return this.serverConfig.messengers.filter((m) => m !== 'email' && !m.startsWith('email-'));
     },
+
+    deliverabilityReportUrl() {
+      if (!this.deliverability.testId || !this.serverConfig.happydeliver) return '#';
+      const base = String(this.serverConfig.happydeliver.url || '').replace(/\/+$/, '');
+      return `${base}/test/${encodeURIComponent(this.deliverability.testId)}`;
+    },
+
+    deliverabilityBreakdown() {
+      const s = this.deliverability.report && this.deliverability.report.summary;
+      if (!s) return [];
+      // Backend proxies happyDeliver JSON verbatim; listmonk's axios interceptor
+      // converts snake_case to camelCase (dns_score → dnsScore, etc).
+      return [
+        { key: 'dns', label: 'DNS', grade: s.dnsGrade, score: s.dnsScore },
+        { key: 'auth', label: this.$t('campaigns.deliverabilityAuth'), grade: s.authenticationGrade, score: s.authenticationScore },
+        { key: 'spam', label: this.$t('campaigns.deliverabilitySpam'), grade: s.spamGrade, score: s.spamScore },
+        { key: 'blacklist', label: this.$t('campaigns.deliverabilityBlacklist'), grade: s.blacklistGrade, score: s.blacklistScore },
+        { key: 'header', label: this.$t('campaigns.deliverabilityHeader'), grade: s.headerGrade, score: s.headerScore },
+        { key: 'content', label: this.$t('campaigns.deliverabilityContent'), grade: s.contentGrade, score: s.contentScore },
+      ].filter((r) => r.grade !== undefined);
+    },
   },
 
   beforeRouteLeave(to, from, next) {
@@ -825,6 +1055,7 @@ export default Vue.extend({
 
   beforeDestroy() {
     this.$events.$off('campaign.update');
+    this.clearDeliverabilityTimers();
   },
 });
 </script>

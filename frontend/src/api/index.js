@@ -334,6 +334,20 @@ export const testCampaign = async (data) => http.post(
   { loading: models.campaigns },
 );
 
+export const testCampaignDeliverability = async (data) => http.post(
+  `/api/campaigns/${data.id}/test-deliverability`,
+  data,
+  { loading: models.campaigns },
+);
+
+export const getDeliverabilityStatus = async (testId) => http.get(
+  `/api/happydeliver/test/${encodeURIComponent(testId)}`,
+);
+
+export const getDeliverabilityReport = async (testId) => http.get(
+  `/api/happydeliver/report/${encodeURIComponent(testId)}`,
+);
+
 export const updateCampaign = async (id, data) => http.put(
   `/api/campaigns/${id}`,
   data,

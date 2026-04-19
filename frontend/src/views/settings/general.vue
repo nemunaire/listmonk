@@ -91,6 +91,19 @@
     </b-field>
 
     <hr />
+    <div>
+      <h2 class="is-size-4 mb-5">
+        {{ $t('settings.general.happyDeliver') }}
+      </h2>
+      <b-field :label="$t('settings.general.happyDeliverURL')" label-position="on-border"
+        :message="$t('settings.general.happyDeliverURLHelp')">
+        <b-input v-model="data['app.happydeliver_url']" name="app.happydeliver_url"
+          placeholder="https://happydeliver.example.com" :maxlength="300"
+          type="url" pattern="https?://.*" />
+      </b-field>
+    </div>
+
+    <hr />
     <b-field :label="$t('settings.general.language')" label-position="on-border" :addons="false">
       <b-select v-model="data['app.lang']" name="app.lang">
         <option v-for="l in serverConfig.langs" :key="l.code" :value="l.code">

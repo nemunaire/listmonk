@@ -16,6 +16,7 @@ type Settings struct {
 	SendOptinConfirmation         bool     `json:"app.send_optin_confirmation"`
 	CheckUpdates                  bool     `json:"app.check_updates"`
 	AppLang                       string   `json:"app.lang"`
+	AppHappyDeliverURL            string   `json:"app.happydeliver_url"`
 
 	AppBatchSize             int    `json:"app.batch_size"`
 	AppConcurrency           int    `json:"app.concurrency"`

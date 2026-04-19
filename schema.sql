@@ -248,6 +248,7 @@ INSERT INTO settings (key, value) VALUES
     ('app.check_updates', 'true'),
     ('app.notify_emails', '[]'),
     ('app.lang', '"en"'),
+    ('app.happydeliver_url', '""'),
     ('privacy.individual_tracking', 'false'),
     ('privacy.disable_tracking', 'false'),
     ('privacy.unsubscribe_header', 'true'),

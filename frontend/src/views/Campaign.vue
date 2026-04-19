@@ -176,6 +176,9 @@
                   </b-button>
                 </b-field>
               </div>
+
+              <campaign-deliverability ref="deliverability" :campaign="form" :campaign-id="data.id || 0"
+                :is-new="isNew" />
             </div>
           </div>
         </section>
@@ -326,6 +329,7 @@ import htmlToPlainText from 'textversionjs';
 import Vue from 'vue';
 import { mapState } from 'vuex';
 
+import CampaignDeliverability from '../components/CampaignDeliverability.vue';
 import CampaignPreview from '../components/CampaignPreview.vue';
 import CopyText from '../components/CopyText.vue';
 import Editor from '../components/Editor.vue';
@@ -339,6 +343,7 @@ export default Vue.extend({
     Media,
     CopyText,
     CampaignPreview,
+    CampaignDeliverability,
   },
 
   data() {
@@ -440,6 +445,10 @@ export default Vue.extend({
     isUnsaved() {
       return this.data.body !== this.form.content.body
         || this.data.contentType !== this.form.content.contentType;
+    },
+
+    isDeliverabilityPending() {
+      return this.$refs.deliverability && this.$refs.deliverability.state === 'pending';
     },
 
     onTab(tab) {
@@ -737,6 +746,10 @@ export default Vue.extend({
   },
 
   beforeRouteLeave(to, from, next) {
+    if (this.isDeliverabilityPending()) {
+      this.$utils.confirm(this.$t('campaigns.deliverabilityPendingLeaveConfirm'), () => next(true));
+      return;
+    }
     if (this.isUnsaved()) {
       this.$utils.confirm(this.$t('globals.messages.confirmDiscard'), () => next(true));
       return;
@@ -762,7 +775,7 @@ export default Vue.extend({
   },
 
   mounted() {
-    window.onbeforeunload = () => this.isUnsaved() || null;
+    window.onbeforeunload = () => this.isUnsaved() || this.isDeliverabilityPending() || null;
 
     // Fill default form fields.
     this.form.fromEmail = this.serverConfig.from_email;

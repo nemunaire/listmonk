@@ -27,5 +27,13 @@ func V6_2_0(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger
 		return err
 	}
 
+	// Move the happyDeliver URL out of config.toml into the settings table.
+	if _, err := db.Exec(`
+		INSERT INTO settings (key, value) VALUES ('app.happydeliver_url', '""')
+		ON CONFLICT (key) DO NOTHING;
+	`); err != nil {
+		return err
+	}
+
 	return nil
 }

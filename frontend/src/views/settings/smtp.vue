@@ -150,6 +150,12 @@
                   <b-input v-model="item.name" name="name" placeholder="email-primary" :maxlength="100" />
                 </b-field>
               </div>
+              <div class="column">
+                <b-field :label="$t('settings.mailserver.excludeFromPool')"
+                  :message="$t('settings.mailserver.excludeFromPoolHelp')">
+                  <b-switch v-model="item.exclude_from_pool" name="exclude_from_pool" />
+                </b-field>
+              </div>
             </div>
 
             <div class="columns">
@@ -283,6 +289,7 @@ export default Vue.extend({
         wait_timeout: '5s',
         tls_type: 'STARTTLS',
         tls_skip_verify: false,
+        exclude_from_pool: false,
       });
 
       this.$nextTick(() => {
